@@ -6,8 +6,8 @@ import os
 
 # --- CONFIGURACIÓN ---
 WIDTH, HEIGHT = 800, 600
-ORIGINAL_SPRITE_SIZE = 32
-SCALE_FACTOR = 2
+ORIGINAL_SPRITE_SIZE = 32  # Ajustado a 16x16 según tus assets
+SCALE_FACTOR = 2           # Escala a 32x32
 PLAYER_SIZE = ORIGINAL_SPRITE_SIZE * SCALE_FACTOR
 OBJ_SIZE = 50
 ANIMATION_SPEED = 150
@@ -25,18 +25,24 @@ class PlayerSprite:
             'walk': self.load_spritesheet('images/character/Walk.png')
         }
         self.state = 'idle'
-        self.direction = 0
+        self.direction = 0 # 0: Abajo, 1: Arriba, 2: Derecha, 3: Izquierda
         self.frame_index = 0
         self.last_update = pygame.time.get_ticks()
 
     def load_spritesheet(self, filename):
         if not os.path.exists(filename):
+            print(f"Advertencia: No se encontró {filename}")
             return None
+            
         sheet = pygame.image.load(filename).convert_alpha()
-        sheet_width, _ = sheet.get_size()
+        sheet_width, sheet_height = sheet.get_size()
         cols = sheet_width // ORIGINAL_SPRITE_SIZE
+        rows_in_file = sheet_height // ORIGINAL_SPRITE_SIZE
+        
         animation_database = []
-        for row in range(4):
+        
+        # 1. Cargar las filas existentes (Frente, Espalda, Derecha...)
+        for row in range(min(rows_in_file, 4)):
             row_frames = []
             for col in range(cols):
                 rect = pygame.Rect(col * ORIGINAL_SPRITE_SIZE, row * ORIGINAL_SPRITE_SIZE, ORIGINAL_SPRITE_SIZE, ORIGINAL_SPRITE_SIZE)
@@ -45,13 +51,25 @@ class PlayerSprite:
                 scaled_frame = pygame.transform.scale(frame, (PLAYER_SIZE, PLAYER_SIZE))
                 row_frames.append(scaled_frame)
             animation_database.append(row_frames)
+        
+        # 2. Lógica Senior: Si solo hay 3 filas, generamos la Izquierda (3) a partir de la Derecha (2)
+        if len(animation_database) == 3:
+            right_frames = animation_database[2]
+            left_frames = [pygame.transform.flip(f, True, False) for f in right_frames]
+            animation_database.append(left_frames)
+            
         return animation_database
 
 class GameClient:
     def __init__(self):
         if os.environ.get('WSL_DISTRO_NAME'): os.environ['SDL_AUDIODRIVER'] = 'dummy'
         self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client.connect(('127.0.0.1', 5555))
+        
+        try:
+            self.client.connect(('127.0.0.1', 5555))
+        except:
+            print("No se pudo conectar al servidor.")
+            os._exit(1)
         
         raw_init = self.client.recv(4096).decode().split('\n')[0]
         init_data = json.loads(raw_init)
@@ -89,40 +107,61 @@ class GameClient:
             keys = pygame.key.get_pressed()
             new_pos = self.pos.copy()
             moving = False
-            if keys[pygame.K_a]: new_pos.x -= 4; self.my_sprite_system.direction = 3; moving = True
-            elif keys[pygame.K_d]: new_pos.x += 4; self.my_sprite_system.direction = 2; moving = True
-            if keys[pygame.K_w]: new_pos.y -= 4; self.my_sprite_system.direction = 1; moving = True
-            elif keys[pygame.K_s]: new_pos.y += 4; self.my_sprite_system.direction = 0; moving = True
+            
+            # Movimiento y asignación de dirección
+            if keys[pygame.K_a]: # Izquierda
+                new_pos.x -= 4
+                self.my_sprite_system.direction = 3
+                moving = True
+            elif keys[pygame.K_d]: # Derecha
+                new_pos.x += 4
+                self.my_sprite_system.direction = 2
+                moving = True
+            
+            if keys[pygame.K_w]: # Arriba
+                new_pos.y -= 4
+                if not moving: self.my_sprite_system.direction = 1
+                moving = True
+            elif keys[pygame.K_s]: # Abajo
+                new_pos.y += 4
+                if not moving: self.my_sprite_system.direction = 0
+                moving = True
 
-            # Una forma más elegante de escribir los límites de pantalla:
+            # Validación de límites y colisiones
             if 0 <= new_pos.x <= WIDTH - PLAYER_SIZE and 0 <= new_pos.y <= HEIGHT - PLAYER_SIZE:
                 temp_rect = pygame.Rect(new_pos.x, new_pos.y, PLAYER_SIZE, PLAYER_SIZE)
-                collision = False
-                for obs in self.obstacles:
-                    if temp_rect.colliderect(obs):
-                        collision = True
-                        break
+                collision = any(temp_rect.colliderect(obs) for obs in self.obstacles)
                 if not collision:
                     self.pos = new_pos
+            
             if moving: new_state = 'walk'
 
         self.my_sprite_system.state = new_state
-        # Temporizador de animación
+        
+        # Animación
         if pygame.time.get_ticks() - self.my_sprite_system.last_update > ANIMATION_SPEED:
             self.my_sprite_system.last_update = pygame.time.get_ticks()
             self.my_sprite_system.frame_index += 1
 
+        # Red
         try:
-            payload = {"type": "update", "pos": {"x": self.pos.x, "y": self.pos.y}, 
-                       "anim_state": self.my_sprite_system.state, "direction": self.my_sprite_system.direction}
+            payload = {
+                "type": "update", 
+                "pos": {"x": self.pos.x, "y": self.pos.y}, 
+                "anim_state": self.my_sprite_system.state, 
+                "direction": self.my_sprite_system.direction
+            }
             self.client.send((json.dumps(payload) + "\n").encode())
         except: pass
 
     def draw(self):
         screen.fill((50, 50, 50))
+        
+        # Dibujar Objetos
         for obj in self.map_data.get("objects", []):
             pygame.draw.rect(screen, obj["color"], (obj["x"], obj["y"], OBJ_SIZE, OBJ_SIZE))
             
+        # Dibujar Jugadores
         for pid, pdata in self.other_players.items():
             if "pos" not in pdata: continue
             ppos = pdata["pos"]
@@ -130,19 +169,20 @@ class GameClient:
             p_dir = pdata.get("direction", 0)
             
             try:
-                anim_data = self.my_sprite_system.animations[p_state]
-                if anim_data:
+                anim_data = self.my_sprite_system.animations.get(p_state)
+                if anim_data and p_dir < len(anim_data):
                     row = anim_data[p_dir]
                     f_idx = self.my_sprite_system.frame_index % len(row)
                     screen.blit(row[f_idx], (ppos["x"], ppos["y"]))
-                else: raise ValueError
+                else:
+                    pygame.draw.rect(screen, (200, 200, 200), (ppos["x"], ppos["y"], PLAYER_SIZE, PLAYER_SIZE))
             except:
                 pygame.draw.rect(screen, (200, 200, 200), (ppos["x"], ppos["y"], PLAYER_SIZE, PLAYER_SIZE))
 
             name_tag = font.render(pid, True, (255, 255, 255))
             screen.blit(name_tag, (ppos["x"] - 5, ppos["y"] - 20))
 
-        # Chat
+        # Dibujar Chat
         chat_y = HEIGHT - 60
         if self.chat_log:
             bg = pygame.Surface((350, 100)); bg.set_alpha(150); bg.fill((20, 20, 20))
@@ -164,7 +204,9 @@ class GameClient:
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_RETURN:
                         if self.chatting and self.input_text.strip():
-                            self.client.send((json.dumps({"type": "chat", "text": self.input_text}) + "\n").encode())
+                            try:
+                                self.client.send((json.dumps({"type": "chat", "text": self.input_text}) + "\n").encode())
+                            except: pass
                             self.input_text = ""
                         self.chatting = not self.chatting
                     elif self.chatting:
