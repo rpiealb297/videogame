@@ -1,9 +1,0 @@
-{
-    "width": 800,
-    "height": 600,
-    "objects": [
-        {"id": 1, "tipo": "fuente", "x": 400, "y": 300, "color": [0, 0, 255]},
-        {"id": 2, "tipo": "estatua", "x": 350, "y": 350, "color": [100, 100, 100]},
-        {"id": 3, "tipo": "tienda", "x": 600, "y": 150, "color": [139, 69, 19]}
-    ]
-}

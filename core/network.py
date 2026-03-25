@@ -1,0 +1,6 @@
+# --- CONFIGURACIÓN ---
+WIDTH, HEIGHT = 800, 600
+ORIGINAL_SPRITE_SIZE = 32  # Tamaño base para el personaje
+SCALE_FACTOR = 2           # Escala general
+PLAYER_SIZE = ORIGINAL_SPRITE_SIZE * SCALE_FACTOR
+ANIMATION_SPEED = 150

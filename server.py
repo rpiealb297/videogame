@@ -10,7 +10,7 @@ class GameServer:
         self.server.listen()
         
         try:
-            with open('mapa.json', 'r') as f:
+            with open('data/mapa.json', 'r') as f:
                 self.map_data = json.load(f)
         except:
             self.map_data = {"width": 800, "height": 600, "objects": []}

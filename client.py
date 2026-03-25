@@ -3,20 +3,92 @@ import socket
 import json
 import threading
 import os
+from core import constants
 
-# --- CONFIGURACIÓN ---
-WIDTH, HEIGHT = 800, 600
-ORIGINAL_SPRITE_SIZE = 32  # Ajustado a 16x16 según tus assets
-SCALE_FACTOR = 2           # Escala a 32x32
-PLAYER_SIZE = ORIGINAL_SPRITE_SIZE * SCALE_FACTOR
-OBJ_SIZE = 50
-ANIMATION_SPEED = 150
+# --- CONFIGURACIÓN DEL RECORTE DE OBJETOS (tileset) ---
+# Define aquí qué región de 'House.png' es la casa real.
+OBJECT_SPRITE_CONFIG = {
+    "casa": {
+        "path": "images/objects/House.png",
+        # --- AJUSTAR AQUÍ --- Coordenadas del tileset
+        "src_x": 150,       # Píxel X donde empieza la casa en el .png
+        "src_y": 0,       # Píxel Y donde empieza la casa en el .png
+        "src_w": 75,      # Ancho original de la casa en el .png
+        "src_h": 100,      # Alto original de la casa en el .png
+        # ---------------------
+        # Tamaño final en el juego (escalado)
+        "display_w": 64 * 1.5, # Ejemplo: escalado un poco
+        "display_h": 64 * 1.5
+    },
+
+    "valla": {
+        "path": "images/objects/valla.png",
+        # --- AJUSTAR AQUÍ --- Coordenadas del tileset
+        "src_x": 0,       # Píxel X donde empieza la casa en el .png
+        "src_y": 0,       # Píxel Y donde empieza la casa en el .png
+        "src_w": 50,      # Ancho original de la casa en el .png
+        "src_h": 50,      # Alto original de la casa en el .png
+        # ---------------------
+        # Tamaño final en el juego (escalado)
+        "display_w": 32 * 1.5, # Ejemplo: escalado un poco
+        "display_h": 32 * 1.5
+    }
+}
 
 pygame.init()
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+screen = pygame.display.set_mode((constants.WIDTH, constants.HEIGHT))
 clock = pygame.time.Clock()
 font = pygame.font.SysFont("Verdana", 14)
 chat_font = pygame.font.SysFont("Verdana", 12)
+
+# --- GESTOR DE IMÁGENES DE OBJETOS ACTUALIZADO (con recorte) ---
+class ObjectManager:
+    def __init__(self):
+        self.images = {}
+        # Diccionario para guardar los Rects de colisión escalados
+        self.collision_rects = {} 
+        self.load_assets()
+
+    def load_assets(self):
+        for obj_type, config in OBJECT_SPRITE_CONFIG.items():
+            path = config["path"]
+            if not os.path.exists(path):
+                print(f"Aviso Senior: No se encontró tileset para '{obj_type}' en {path}")
+                continue
+
+            try:
+                # 1. Cargar el tileset completo
+                tileset = pygame.image.load(path).convert_alpha()
+                
+                # 2. Definir la región de recorte (src_rect)
+                src_rect = pygame.Rect(config["src_x"], config["src_y"], config["src_w"], config["src_h"])
+                
+                # 3. RECORTE SENIOR: Crear una superficie vacía y pegar solo el recorte
+                cropped_img = pygame.Surface((config["src_w"], config["src_h"]), pygame.SRCALPHA)
+                cropped_img.blit(tileset, (0, 0), src_rect)
+                
+                # 4. Escalar la imagen final
+                final_w = int(config["display_w"])
+                final_h = int(config["display_h"])
+                final_img = pygame.transform.scale(cropped_img, (final_w, final_h))
+                
+                self.images[obj_type] = final_img
+                
+                # Guardamos el tamaño escalado para las colisiones dinámicas
+                self.collision_rects[obj_type] = pygame.Rect(0, 0, final_w, final_h)
+                
+            except Exception as e:
+                print(f"Error cargando objeto '{obj_type}': {e}")
+
+    def get_image(self, obj_type):
+        return self.images.get(obj_type)
+        
+    def get_collision_size(self, obj_type):
+        """Devuelve (ancho, alto) escalado para las colisiones."""
+        if obj_type in self.collision_rects:
+            r = self.collision_rects[obj_type]
+            return r.width, r.height
+        return 50, 50 # Tamaño por defecto si no es sprite
 
 class PlayerSprite:
     def __init__(self):
@@ -36,23 +108,21 @@ class PlayerSprite:
             
         sheet = pygame.image.load(filename).convert_alpha()
         sheet_width, sheet_height = sheet.get_size()
-        cols = sheet_width // ORIGINAL_SPRITE_SIZE
-        rows_in_file = sheet_height // ORIGINAL_SPRITE_SIZE
+        cols = sheet_width // constants.ORIGINAL_SPRITE_SIZE
+        rows_in_file = sheet_height // constants.ORIGINAL_SPRITE_SIZE
         
         animation_database = []
         
-        # 1. Cargar las filas existentes (Frente, Espalda, Derecha...)
         for row in range(min(rows_in_file, 4)):
             row_frames = []
             for col in range(cols):
-                rect = pygame.Rect(col * ORIGINAL_SPRITE_SIZE, row * ORIGINAL_SPRITE_SIZE, ORIGINAL_SPRITE_SIZE, ORIGINAL_SPRITE_SIZE)
-                frame = pygame.Surface((ORIGINAL_SPRITE_SIZE, ORIGINAL_SPRITE_SIZE), pygame.SRCALPHA)
+                rect = pygame.Rect(col * constants.ORIGINAL_SPRITE_SIZE, row * constants.ORIGINAL_SPRITE_SIZE, constants.ORIGINAL_SPRITE_SIZE, constants.ORIGINAL_SPRITE_SIZE)
+                frame = pygame.Surface((constants.ORIGINAL_SPRITE_SIZE, constants.ORIGINAL_SPRITE_SIZE), pygame.SRCALPHA)
                 frame.blit(sheet, (0, 0), rect)
-                scaled_frame = pygame.transform.scale(frame, (PLAYER_SIZE, PLAYER_SIZE))
+                scaled_frame = pygame.transform.scale(frame, (constants.PLAYER_SIZE, constants.PLAYER_SIZE))
                 row_frames.append(scaled_frame)
             animation_database.append(row_frames)
         
-        # 2. Lógica Senior: Si solo hay 3 filas, generamos la Izquierda (3) a partir de la Derecha (2)
         if len(animation_database) == 3:
             right_frames = animation_database[2]
             left_frames = [pygame.transform.flip(f, True, False) for f in right_frames]
@@ -75,10 +145,28 @@ class GameClient:
         init_data = json.loads(raw_init)
         self.my_id = init_data["id"]
         self.map_data = init_data["map"]
-        self.obstacles = [pygame.Rect(o["x"], o["y"], OBJ_SIZE, OBJ_SIZE) for o in self.map_data.get("objects", [])]
+        
+        # Gestor de objetos debe inicializarse ANTES que los obstáculos
+        self.obj_manager = ObjectManager() 
+        
+        # --- GENERACIÓN DE OBSTÁCULOS DINÁMICOS ---
+        # Ahora el tamaño de la colisión depende de si el objeto tiene sprite o no
+        self.obstacles = []
+        for o in self.map_data.get("objects", []):
+            obj_type = o.get("tipo", "").lower()
+            img = self.obj_manager.get_image(obj_type)
+            
+            if img:
+                w, h = self.obj_manager.get_collision_size(obj_type)
+                # La colisión coincide con el sprite
+                self.obstacles.append(pygame.Rect(o["x"], o["y"], w, h))
+            else:
+                # Colisión genérica (50x50) para rectángulos de color
+                self.obstacles.append(pygame.Rect(o["x"], o["y"], 50, 50))
         
         self.pos = pygame.Vector2(100, 100)
         self.my_sprite_system = PlayerSprite()
+        
         self.other_players = {}
         self.chat_log = []
         self.input_text = ""
@@ -108,28 +196,26 @@ class GameClient:
             new_pos = self.pos.copy()
             moving = False
             
-            # Movimiento y asignación de dirección
-            if keys[pygame.K_a]: # Izquierda
+            if keys[pygame.K_a]: 
                 new_pos.x -= 4
                 self.my_sprite_system.direction = 3
                 moving = True
-            elif keys[pygame.K_d]: # Derecha
+            elif keys[pygame.K_d]: 
                 new_pos.x += 4
                 self.my_sprite_system.direction = 2
                 moving = True
             
-            if keys[pygame.K_w]: # Arriba
+            if keys[pygame.K_w]: 
                 new_pos.y -= 4
                 if not moving: self.my_sprite_system.direction = 1
                 moving = True
-            elif keys[pygame.K_s]: # Abajo
+            elif keys[pygame.K_s]: 
                 new_pos.y += 4
                 if not moving: self.my_sprite_system.direction = 0
                 moving = True
 
-            # Validación de límites y colisiones
-            if 0 <= new_pos.x <= WIDTH - PLAYER_SIZE and 0 <= new_pos.y <= HEIGHT - PLAYER_SIZE:
-                temp_rect = pygame.Rect(new_pos.x, new_pos.y, PLAYER_SIZE, PLAYER_SIZE)
+            if 0 <= new_pos.x <= constants.WIDTH - constants.PLAYER_SIZE and 0 <= new_pos.y <= constants.HEIGHT - constants.PLAYER_SIZE:
+                temp_rect = pygame.Rect(new_pos.x, new_pos.y, constants.PLAYER_SIZE, constants.PLAYER_SIZE)
                 collision = any(temp_rect.colliderect(obs) for obs in self.obstacles)
                 if not collision:
                     self.pos = new_pos
@@ -138,12 +224,10 @@ class GameClient:
 
         self.my_sprite_system.state = new_state
         
-        # Animación
-        if pygame.time.get_ticks() - self.my_sprite_system.last_update > ANIMATION_SPEED:
+        if pygame.time.get_ticks() - self.my_sprite_system.last_update > constants.ANIMATION_SPEED:
             self.my_sprite_system.last_update = pygame.time.get_ticks()
             self.my_sprite_system.frame_index += 1
 
-        # Red
         try:
             payload = {
                 "type": "update", 
@@ -157,9 +241,22 @@ class GameClient:
     def draw(self):
         screen.fill((50, 50, 50))
         
-        # Dibujar Objetos
+        # --- DIBUJAR OBJETOS (Con recorte e info de debug) ---
         for obj in self.map_data.get("objects", []):
-            pygame.draw.rect(screen, obj["color"], (obj["x"], obj["y"], OBJ_SIZE, OBJ_SIZE))
+            obj_type = obj.get("tipo", "").lower()
+            obj_img = self.obj_manager.get_image(obj_type)
+            
+            if obj_img:
+                # Dibujamos el sprite recortado de la casa
+                screen.blit(obj_img, (obj["x"], obj["y"]))
+                
+                # --- OPCIONAL SENIOR: Debug de Colisiones ---
+                # Si quieres ver la caja de colisión, descomenta la siguiente línea:
+                w, h = self.obj_manager.get_collision_size(obj_type)
+                pygame.draw.rect(screen, (255, 0, 0), (obj["x"], obj["y"], w, h), 1)
+            else:
+                # Si no hay imagen, dibujamos el rect de color (50x50 por defecto)
+                pygame.draw.rect(screen, obj["color"], (obj["x"], obj["y"], 50, 50))
             
         # Dibujar Jugadores
         for pid, pdata in self.other_players.items():
@@ -175,15 +272,15 @@ class GameClient:
                     f_idx = self.my_sprite_system.frame_index % len(row)
                     screen.blit(row[f_idx], (ppos["x"], ppos["y"]))
                 else:
-                    pygame.draw.rect(screen, (200, 200, 200), (ppos["x"], ppos["y"], PLAYER_SIZE, PLAYER_SIZE))
+                    pygame.draw.rect(screen, (200, 200, 200), (ppos["x"], ppos["y"], constants.PLAYER_SIZE, constants.PLAYER_SIZE))
             except:
-                pygame.draw.rect(screen, (200, 200, 200), (ppos["x"], ppos["y"], PLAYER_SIZE, PLAYER_SIZE))
+                pygame.draw.rect(screen, (200, 200, 200), (ppos["x"], ppos["y"], constants.PLAYER_SIZE, constants.PLAYER_SIZE))
 
             name_tag = font.render(pid, True, (255, 255, 255))
             screen.blit(name_tag, (ppos["x"] - 5, ppos["y"] - 20))
 
         # Dibujar Chat
-        chat_y = HEIGHT - 60
+        chat_y = constants.HEIGHT - 60
         if self.chat_log:
             bg = pygame.Surface((350, 100)); bg.set_alpha(150); bg.fill((20, 20, 20))
             screen.blit(bg, (10, chat_y - 110))
